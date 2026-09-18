@@ -98,13 +98,9 @@ def _processar_pagina_texto(page_plumber, reader, writer, config, relatorio):
     posicoes = []
     for ref in refs:
         resultado = config.excel_lookup.buscar(ref['codigo'])
-        relatorio.refs_detectadas_no_pdf.add(ref['codigo'].upper())
         if resultado.preco is None:
             relatorio.nao_encontrados.append((idx + 1, ref['codigo']))
             continue
-        if resultado.motivo != 'exato':
-            relatorio.casamentos_especiais.append((idx + 1, ref['codigo'], resultado.motivo))
-        relatorio.encontrados += 1
 
         lim = limites_texto(words, ref, pw)
         pos = escolher_posicao(
@@ -114,7 +110,16 @@ def _processar_pagina_texto(page_plumber, reader, writer, config, relatorio):
             estilo, verificar_branco=None,
         )
         if pos.modo == 'apertado':
+            # nao existe posicao segura (sem sobrepor texto) -- nao forca.
+            # o item fica de fora do PDF, mas entra na lista de faltantes no
+            # apendice, igual um item nao encontrado (ver refs_detectadas_no_pdf)
             relatorio.avisos_apertado.append((idx + 1, fmt_preco(resultado.preco)))
+            continue
+
+        relatorio.refs_detectadas_no_pdf.add(ref['codigo'].upper())
+        if resultado.motivo != 'exato':
+            relatorio.casamentos_especiais.append((idx + 1, ref['codigo'], resultado.motivo))
+        relatorio.encontrados += 1
         posicoes.append((pos, fmt_preco(resultado.preco)))
 
     base_page = reader.pages[idx]
@@ -169,13 +174,9 @@ def _processar_pagina_ocr(pdf_path, idx, page_plumber, reader, writer, config, r
     posicoes = []
     for ref in refs:
         resultado = config.excel_lookup.buscar(ref['codigo'])
-        relatorio.refs_detectadas_no_pdf.add(ref['codigo'].upper())
         if resultado.preco is None:
             relatorio.nao_encontrados.append((pagina_1based, ref['codigo']))
             continue
-        if resultado.motivo != 'exato':
-            relatorio.casamentos_especiais.append((pagina_1based, ref['codigo'], resultado.motivo))
-        relatorio.encontrados += 1
 
         lim = limites_ocr(tokens, ref, im.width)
         texto = fmt_preco(resultado.preco)
@@ -189,6 +190,12 @@ def _processar_pagina_ocr(pdf_path, idx, page_plumber, reader, writer, config, r
         )
         if pos.modo == 'apertado':
             relatorio.avisos_apertado.append((pagina_1based, texto))
+            continue
+
+        relatorio.refs_detectadas_no_pdf.add(ref['codigo'].upper())
+        if resultado.motivo != 'exato':
+            relatorio.casamentos_especiais.append((pagina_1based, ref['codigo'], resultado.motivo))
+        relatorio.encontrados += 1
         posicoes.append((pos, texto))
 
     base_page = reader.pages[idx]
