@@ -1,0 +1,6 @@
+pdfplumber
+pypdf
+reportlab
+openpyxl
+pytesseract
+Pillow
