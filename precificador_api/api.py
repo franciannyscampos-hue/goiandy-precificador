@@ -41,7 +41,7 @@ CALLBACK_TOKEN = os.environ.get('PRECIFICADOR_CALLBACK_TOKEN', '')
 CONFIGS_DIR = Path(__file__).resolve().parent / 'precificador' / 'configs'
 
 app = FastAPI()
-jobs: dict[str, str] = {}  # job_id -> status (so pra consulta manual/debug, o estado real fica no callback)
+jobs: dict[str, str] = {}
 
 
 class Produto(BaseModel):
@@ -71,37 +71,44 @@ async def status(job_id: str):
 
 
 async def _processar_em_background(job_id: str, req: PrecificarRequest):
+    print(f'[{job_id}] INICIO precification_id={req.callback_precification_id} config={req.config_key} pdf_url={req.pdf_url}', flush=True)
     try:
         with tempfile.TemporaryDirectory() as tmp:
             pdf_path = os.path.join(tmp, 'catalogo.pdf')
+            print(f'[{job_id}] baixando PDF...', flush=True)
             async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
                 resp = await client.get(req.pdf_url)
+                print(f'[{job_id}] download respondeu status={resp.status_code} tamanho={len(resp.content)} bytes content-type={resp.headers.get("content-type")}', flush=True)
                 resp.raise_for_status()
                 with open(pdf_path, 'wb') as f:
                     f.write(resp.content)
+            print(f'[{job_id}] PDF salvo em {pdf_path}', flush=True)
 
             config_path = CONFIGS_DIR / f'{req.config_key}.json'
             if not config_path.exists():
                 raise ValueError(f'Config "{req.config_key}" não encontrada.')
             config = CatalogConfig.carregar(str(config_path))
-            config.excel_path = None  # nao usa, vamos passar o lookup pronto
+            config.excel_path = None
+            print(f'[{job_id}] config carregada: escaneado={config.escaneado}', flush=True)
 
             produtos_dicts = [p.model_dump() for p in req.produtos]
             lookup = PrecoLookup.from_produtos(produtos_dicts, config)
+            print(f'[{job_id}] lookup montado com {len(lookup.precos)} produtos', flush=True)
 
             out_path = os.path.join(tmp, 'resultado.pdf')
 
-            # roda em thread separada pra nao bloquear o event loop (OCR/pdfplumber sao sincronos e pesados)
+            print(f'[{job_id}] iniciando processar_catalogo...', flush=True)
             relatorio = await asyncio.to_thread(
                 processar_catalogo, pdf_path, config, out_path, 1, None, lookup
             )
+            print(f'[{job_id}] processar_catalogo terminou: {relatorio.relatorio()}', flush=True)
 
-            # apendice com os itens da planilha que nao apareceram no catalogo
             todas_refs = {p.reference.strip().upper() for p in req.produtos}
             faltantes_refs = todas_refs - relatorio.refs_detectadas_no_pdf
             resultado_final_path = out_path
             apendice_gerado = False
             if faltantes_refs:
+                print(f'[{job_id}] gerando apendice com {len(faltantes_refs)} itens faltantes...', flush=True)
                 por_ref = {p.reference.strip().upper(): p for p in req.produtos}
                 itens = [(ref, por_ref[ref].name, por_ref[ref].price) for ref in faltantes_refs if ref in por_ref]
                 apendice_bytes = gerar_apendice_faltantes(itens, req.config_key)
@@ -116,13 +123,21 @@ async def _processar_em_background(job_id: str, req: PrecificarRequest):
                     writer.write(f)
                 apendice_gerado = True
 
+            print(f'[{job_id}] enviando callback de sucesso...', flush=True)
             await _enviar_callback_sucesso(req.callback_precification_id, resultado_final_path,
                                             relatorio.encontrados, len(faltantes_refs), apendice_gerado)
+            print(f'[{job_id}] FIM - sucesso', flush=True)
             jobs[job_id] = 'done'
 
     except Exception as e:
+        print(f'[{job_id}] ERRO: {e}', flush=True)
         traceback.print_exc()
-        await _enviar_callback_erro(req.callback_precification_id, str(e))
+        try:
+            await _enviar_callback_erro(req.callback_precification_id, str(e))
+            print(f'[{job_id}] callback de erro enviado', flush=True)
+        except Exception as e2:
+            print(f'[{job_id}] FALHOU AO ENVIAR CALLBACK DE ERRO: {e2}', flush=True)
+            traceback.print_exc()
         jobs[job_id] = 'error'
 
 
@@ -130,7 +145,7 @@ async def _enviar_callback_sucesso(precification_id, pdf_path, total_matched, to
     url = f'{CALLBACK_BASE_URL}/api/precifications/{precification_id}/callback'
     async with httpx.AsyncClient(timeout=120) as client:
         with open(pdf_path, 'rb') as f:
-            await client.put(
+            resp = await client.put(
                 url,
                 headers={'X-Callback-Token': CALLBACK_TOKEN},
                 data={
@@ -141,13 +156,16 @@ async def _enviar_callback_sucesso(precification_id, pdf_path, total_matched, to
                 },
                 files={'file': ('resultado.pdf', f, 'application/pdf')},
             )
+            print(f'callback sucesso -> {resp.status_code} {resp.text[:300]}', flush=True)
+            resp.raise_for_status()
 
 
 async def _enviar_callback_erro(precification_id, mensagem):
     url = f'{CALLBACK_BASE_URL}/api/precifications/{precification_id}/callback'
     async with httpx.AsyncClient(timeout=30) as client:
-        await client.put(
+        resp = await client.put(
             url,
             headers={'X-Callback-Token': CALLBACK_TOKEN},
             data={'status': 'error', 'error_message': mensagem},
         )
+        print(f'callback erro -> {resp.status_code} {resp.text[:300]}', flush=True)
