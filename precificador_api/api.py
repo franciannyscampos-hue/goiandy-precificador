@@ -38,6 +38,13 @@ import io
 
 CALLBACK_BASE_URL = os.environ['CALLBACK_BASE_URL']
 CALLBACK_TOKEN = os.environ.get('PRECIFICADOR_CALLBACK_TOKEN', '')
+if not CALLBACK_TOKEN:
+    raise RuntimeError(
+        "A variavel de ambiente PRECIFICADOR_CALLBACK_TOKEN nao esta definida "
+        "(ou esta vazia). Configure-a no Railway com o mesmo valor usado no "
+        "wrangler.jsonc do sistema Cloudflare, caso contrario os callbacks de "
+        "sucesso/erro serao rejeitados com 401 Unauthorized."
+    )
 CONFIGS_DIR = Path(__file__).resolve().parent / 'precificador' / 'configs'
 
 app = FastAPI()
@@ -143,6 +150,8 @@ async def _processar_em_background(job_id: str, req: PrecificarRequest):
 
 async def _enviar_callback_sucesso(precification_id, pdf_path, total_matched, total_missing, apendice_gerado):
     url = f'{CALLBACK_BASE_URL}/api/precifications/{precification_id}/callback'
+    token_preview = f'{CALLBACK_TOKEN[:8]}...' if CALLBACK_TOKEN else '(vazio)'
+    print(f'callback sucesso -> enviando para {url} com X-Callback-Token={token_preview}', flush=True)
     async with httpx.AsyncClient(timeout=120) as client:
         with open(pdf_path, 'rb') as f:
             resp = await client.put(
@@ -157,6 +166,13 @@ async def _enviar_callback_sucesso(precification_id, pdf_path, total_matched, to
                 files={'file': ('resultado.pdf', f, 'application/pdf')},
             )
             print(f'callback sucesso -> {resp.status_code} {resp.text[:300]}', flush=True)
+            if resp.status_code == 401:
+                print(
+                    f'callback sucesso -> 401 Unauthorized: verifique se PRECIFICADOR_CALLBACK_TOKEN '
+                    f'esta configurado corretamente no Railway e corresponde ao token esperado pela '
+                    f'API Cloudflare (token enviado: {token_preview}).',
+                    flush=True,
+                )
             resp.raise_for_status()
 
 
