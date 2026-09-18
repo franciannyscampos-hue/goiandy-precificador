@@ -51,12 +51,22 @@ class Relatorio:
         return '\n'.join(linhas)
 
 
-def eh_catalogo_escaneado(pdf_path: str, n_paginas_teste=3) -> bool:
+def eh_catalogo_escaneado(pdf_path: str, n_amostras=10) -> bool:
+    """Decide se o catalogo e escaneado (sem texto nativo) ou nao. Em vez de olhar
+    so as primeiras paginas -- que podem ser so capa/imagem mesmo num catalogo com
+    texto de verdade nas paginas de produto -- espalha a amostra pelo documento
+    inteiro. So considera "escaneado" se a GRANDE MAIORIA das paginas amostradas
+    nao tiver texto nenhum; uma capa de imagem sozinha nao deve enganar isso."""
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages[:n_paginas_teste]:
-            if (page.extract_text() or '').strip():
-                return False
-    return True
+        n = len(pdf.pages)
+        if n == 0:
+            return True
+        indices = sorted(set(min(n - 1, round(i * (n - 1) / max(1, n_amostras - 1))) for i in range(n_amostras)))
+        com_texto = 0
+        for i in indices:
+            if (pdf.pages[i].extract_text() or '').strip():
+                com_texto += 1
+        return (com_texto / len(indices)) < 0.2
 
 
 def processar_catalogo(pdf_path: str, config, out_path: str, pagina_inicial=1, pagina_final=None, lookup=None) -> Relatorio:
