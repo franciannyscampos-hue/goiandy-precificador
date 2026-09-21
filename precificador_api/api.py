@@ -28,7 +28,7 @@ import httpx
 from fastapi import FastAPI, BackgroundTasks
 from pydantic import BaseModel
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from precificador.config import CatalogConfig
 from precificador.matcher import PrecoLookup
 from precificador.pipeline import processar_catalogo, testar_amostra, eh_catalogo_escaneado
