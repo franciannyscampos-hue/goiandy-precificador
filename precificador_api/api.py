@@ -235,7 +235,7 @@ async def _enviar_callback_erro(precification_id, mensagem):
             data={'status': 'error', 'error_message': mensagem},
         )
         print(f'callback erro -> {resp.status_code} {resp.text[:300]}', flush=True)
-      class MergeCatalogRequest(BaseModel):
+class MergeCatalogRequest(BaseModel):
     part_urls: list[str]
     callback_catalog_id: int
 
