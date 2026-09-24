@@ -235,3 +235,73 @@ async def _enviar_callback_erro(precification_id, mensagem):
             data={'status': 'error', 'error_message': mensagem},
         )
         print(f'callback erro -> {resp.status_code} {resp.text[:300]}', flush=True)
+      class MergeCatalogRequest(BaseModel):
+    part_urls: list[str]
+    callback_catalog_id: int
+
+
+@app.post('/merge-catalog')
+async def merge_catalog(req: MergeCatalogRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = 'processing'
+    background_tasks.add_task(_merge_catalog_em_background, job_id, req)
+    return {'job_id': job_id}
+
+
+async def _merge_catalog_em_background(job_id: str, req: MergeCatalogRequest):
+    print(f'[{job_id}] MERGE catalogo callback_id={req.callback_catalog_id} partes={len(req.part_urls)}', flush=True)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            writer = PdfWriter()
+            async with httpx.AsyncClient(follow_redirects=True, timeout=120) as client:
+                for idx, part_url in enumerate(req.part_urls):
+                    print(f'[{job_id}] baixando parte {idx + 1}/{len(req.part_urls)}: {part_url}', flush=True)
+                    resp = await client.get(part_url)
+                    resp.raise_for_status()
+                    reader = PdfReader(io.BytesIO(resp.content))
+                    for page in reader.pages:
+                        writer.add_page(page)
+
+            out_path = os.path.join(tmp, 'catalogo_final.pdf')
+            with open(out_path, 'wb') as f:
+                writer.write(f)
+            print(f'[{job_id}] merge concluido, {len(writer.pages)} paginas, enviando callback...', flush=True)
+
+            await _enviar_callback_merge_sucesso(req.callback_catalog_id, out_path)
+            print(f'[{job_id}] FIM - sucesso', flush=True)
+            jobs[job_id] = 'done'
+    except Exception as e:
+        print(f'[{job_id}] ERRO: {e}', flush=True)
+        traceback.print_exc()
+        try:
+            await _enviar_callback_merge_erro(req.callback_catalog_id, str(e))
+        except Exception as e2:
+            print(f'[{job_id}] FALHOU AO ENVIAR CALLBACK DE ERRO: {e2}', flush=True)
+            traceback.print_exc()
+        jobs[job_id] = 'error'
+
+
+async def _enviar_callback_merge_sucesso(catalog_id, pdf_path):
+    url = f'{CALLBACK_BASE_URL}/api/catalog-merge-callback/{catalog_id}'
+    async with httpx.AsyncClient(timeout=120) as client:
+        with open(pdf_path, 'rb') as f:
+            resp = await client.put(
+                url,
+                headers={'X-Callback-Token': CALLBACK_TOKEN},
+                data={'status': 'done'},
+                files={'file': ('catalogo.pdf', f, 'application/pdf')},
+            )
+            print(f'callback merge sucesso -> {resp.status_code} {resp.text[:300]}', flush=True)
+            resp.raise_for_status()
+
+
+async def _enviar_callback_merge_erro(catalog_id, mensagem):
+    url = f'{CALLBACK_BASE_URL}/api/catalog-merge-callback/{catalog_id}'
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.put(
+            url,
+            headers={'X-Callback-Token': CALLBACK_TOKEN},
+            data={'status': 'error', 'error_message': mensagem},
+        )
+        print(f'callback merge erro -> {resp.status_code} {resp.text[:300]}', flush=True)
+      
